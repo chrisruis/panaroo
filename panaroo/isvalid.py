@@ -349,7 +349,7 @@ def clique_removal(G):
     return maxiset, cliques
 
 # modified version of networkX function which stops when all nodes of interest have been found.
-def single_source_shortest_path_length_mod(G,source,search_nodes=None, cutoff=50):
+def single_source_shortest_path_length_mod(G,source,search_nodes=None, cutoff=100000):
     """Compute the shortest path lengths from source to all reachable nodes.
 
     Parameters

@@ -233,51 +233,19 @@ def collapse_families(G,
                                             set(G.nodes[nB]['centroid']))) > 0:
                                     shouldmerge = False
 
-                                    if shouldmerge:
-                                        idsA = defaultdict(list)
-                                        for sid in G.nodes[nA]['seqIDs']:
-                                            ssid = sid.split("_")
-                                            if ssid[0] in mem_inter:
-                                                idsA[ssid[0]].append(sid)
-
-                                        idsB = defaultdict(list)
-                                        for sid in G.nodes[nB]['seqIDs']:
-                                            ssid = sid.split("_")
-                                            if ssid[0] in mem_inter:
-                                                idsB[ssid[0]].append(sid)
-
-                                        for imem in mem_inter:
-                                            for sidA in set([
-                                                    seqid_to_index[sid]
-                                                    for sid in idsA[imem]
-                                            ]):
-                                                for sidB in set([
-                                                        seqid_to_index[sid]
-                                                        for sid in idsB[imem]
-                                                ]):
-                                                    if (
-                                                        (sidA,
-                                                         sidB) in nonzero_dist
-                                                    ) or ((sidB,
-                                                           sidA) in nonzero_dist):
-                                                        shouldmerge = False
-                                                        break
-                                                if not shouldmerge: break
+                                if shouldmerge:
+                                    for imem in mem_inter:
+                                        for sidA in node_mem_index_dict[nA][imem]:
+                                            for sidB in node_mem_index_dict[nB][imem]:
+                                                if (
+                                                    (sidA,
+                                                    sidB) in nonzero_dist
+                                                ) or ((sidB,
+                                                    sidA) in nonzero_dist):
+                                                    shouldmerge = False
+                                                    break
                                             if not shouldmerge: break
-
-                                    # if shouldmerge:
-                                    #     for imem in mem_inter:
-                                    #         for sidA in node_mem_index_dict[nA][imem]:
-                                    #             for sidB in node_mem_index_dict[nB][imem]:
-                                    #                 if (
-                                    #                     (sidA,
-                                    #                     sidB) in nonzero_dist
-                                    #                 ) or ((sidB,
-                                    #                     sidA) in nonzero_dist):
-                                    #                     shouldmerge = False
-                                    #                     break
-                                    #             if not shouldmerge: break
-                                    #         if not shouldmerge: break
+                                        if not shouldmerge: break
 
                                 if shouldmerge:
                                     tempG.add_edge(nA, nB)
