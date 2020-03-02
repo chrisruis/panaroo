@@ -158,7 +158,7 @@ def generate_pan_genome_reference(G, output_dir, split_paralogs=False):
 #         for node in G.nodes():
 #             entropy = 0
 #             for edge in G.edges(node):
-#                 p = G[edge[0]][edge[1]]['weight'] / (1.0 *
+#                 p = G[edge[0]][edge[1]]['size'] / (1.0 *
 #                                                      G.nodes[node]['size'])
 #                 entropy -= p * np.log(p)
 #             outfile.write(",".join([

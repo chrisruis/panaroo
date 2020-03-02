@@ -347,3 +347,56 @@ def clique_removal(G):
 
     maxiset = max(isets)
     return maxiset, cliques
+
+# modified version of networkX function which stops when all nodes of interest have been found.
+def single_source_shortest_path_length_mod(G,source,search_nodes=None, cutoff=50):
+    """Compute the shortest path lengths from source to all reachable nodes.
+
+    Parameters
+    ----------
+    G : NetworkX graph
+
+    source : node
+       Starting node for path
+
+    search_nodes : list
+        After node in search_nodes have been found stop searching.
+
+    Returns
+    -------
+    lengths : dictionary
+        Dictionary of shortest path lengths keyed by target.
+
+    Examples
+    --------
+    >>> G=nx.path_graph(5)
+    >>> length=nx.single_source_shortest_path_length(G,0)
+    >>> length[4]
+    4
+    >>> print(length)
+    {0: 0, 1: 1, 2: 2, 3: 3, 4: 4}
+
+    See Also
+    --------
+    shortest_path_length
+    """
+    seen={}                  # level (number of hops) when seen in BFS
+    level=0                  # the current level
+    nextlevel={source:1}  # dict of nodes to check at next level
+    if len(search_nodes)<1:
+        raise NameError("single_source_shortest_path_length_mod requires nodes to search!")
+    search_nodes = set(search_nodes)
+    search_nodes.discard(source)
+    while nextlevel:
+        thislevel=nextlevel  # advance to next level
+        nextlevel={}         # and start a new list (fringe)
+        for v in thislevel:
+            if v not in seen:
+                seen[v]=level # set the level of vertex v
+                search_nodes.discard(v)
+                if len(search_nodes)<1:
+                    return seen
+                nextlevel.update(G[v]) # add neighbors of v
+        if (cutoff is not None and cutoff <= level):  break
+        level=level+1
+    return seen  # return all path lengths as dictionary

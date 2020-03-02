@@ -1,6 +1,91 @@
 import itertools
-from panaroo.isvalid import del_dups
+from collections import Counter
+from .isvalid import del_dups
 
+def gen_node_iterables(G, nodes, feature, split=None):
+    for n in nodes:
+        if split is None:
+            yield G.nodes[n][feature]
+        else:
+            yield G.nodes[n][feature].split(split)
+
+def temp_iter(list_list):
+    for n in list_list:
+        yield n
+
+def iter_del_dups(iterable):
+    seen = {}
+    for f in itertools.chain.from_iterable(iterable):
+        seen[f] = None
+    return (list(seen.keys()))
+
+def merge_node_cluster(G,
+                nodes,
+                newNode,
+                multi_centroid=True,
+                check_merge_mems=True):
+
+    if check_merge_mems:
+        mem_count = Counter(itertools.chain.from_iterable(gen_node_iterables(G, nodes, 'members')))
+        if max(mem_count.values()) > 1:
+            raise ValueError("merging nodes with the same genome IDs!")
+
+    # take node with most support as the 'consensus'
+    nodes = sorted(nodes, key=lambda x: G.nodes[x]['size'])
+
+    # First create a new node and combine the attributes
+    dna = iter_del_dups(gen_node_iterables(G,nodes,'dna'))
+    maxLenId = 0
+    max_l = 0
+    for i, s in enumerate(dna):
+        if len(s) >= max_l:
+            max_l = len(s)
+            maxLenId = i
+    members = set(iter_del_dups(gen_node_iterables(G,nodes,'members')))
+
+    if multi_centroid:
+        mergedDNA = any(gen_node_iterables(G,nodes,'mergedDNA'))
+    else:
+        mergedDNA = True
+
+    G.add_node(
+        newNode,
+        size=len(members),
+        centroid=iter_del_dups(gen_node_iterables(G,nodes,'centroid')),
+        maxLenId=maxLenId,
+        members=members,
+        seqIDs=set(iter_del_dups(gen_node_iterables(G,nodes,'seqIDs'))),
+        hasEnd=any(gen_node_iterables(G,nodes,'hasEnd')),
+        protein=iter_del_dups(gen_node_iterables(G,nodes,'protein')),
+        dna=dna,
+        annotation=";".join(iter_del_dups(gen_node_iterables(G,nodes,'annotation',split=";"))),
+        description=";".join(iter_del_dups(gen_node_iterables(G,nodes,'description',split=";"))),
+        lengths=list(itertools.chain.from_iterable(gen_node_iterables(G,nodes,'lengths'))),
+        longCentroidID=max(gen_node_iterables(G,nodes,'longCentroidID')),
+        paralog=any(gen_node_iterables(G,nodes,'paralog')),
+        mergedDNA=mergedDNA
+    )
+    if "prevCentroids" in G.nodes[nodes[0]]:
+        G.nodes[newNode]['prevCentroids'] = ";".join(
+            set(iter_del_dups(gen_node_iterables(G,nodes,'prevCentroids',split=";"))))
+
+    # Now iterate through neighbours of each node and add them to the new node
+    merge_nodes = set(nodes)
+    for node in nodes:
+        for neighbour in G.neighbors(node):
+            if neighbour in merge_nodes: continue
+            if G.has_edge(newNode, neighbour):
+                G[newNode][neighbour]['size'] += G[node][neighbour]['size']
+                G[newNode][neighbour]['members'] |= G[node][neighbour]['members']
+            else:
+                G.add_edge(newNode, neighbour,
+                       size=G[node][neighbour]['size'],
+                       members=G[node][neighbour]['members'])
+
+    # remove old nodes from Graph
+    G.remove_nodes_from(nodes)
+
+    return G
 
 def merge_nodes(G,
                 nodeA,
@@ -87,21 +172,21 @@ def merge_nodes(G,
         if neighbor in neigboursB:
             G.add_edge(newNode,
                        neighbor,
-                       weight=G[nodeA][neighbor]['weight'] +
-                       G[nodeB][neighbor]['weight'],
+                       size=G[nodeA][neighbor]['size'] +
+                       G[nodeB][neighbor]['size'],
                        members=G[nodeA][neighbor]['members']
                        | G[nodeB][neighbor]['members'])
             neigboursB.remove(neighbor)
         else:
             G.add_edge(newNode,
                        neighbor,
-                       weight=G[nodeA][neighbor]['weight'],
+                       size=G[nodeA][neighbor]['size'],
                        members=G[nodeA][neighbor]['members'])
 
     for neighbor in neigboursB:
         G.add_edge(newNode,
                    neighbor,
-                   weight=G[nodeB][neighbor]['weight'],
+                   size=G[nodeB][neighbor]['size'],
                    members=G[nodeB][neighbor]['members'])
 
     # remove old nodes from Graph
@@ -123,9 +208,9 @@ def delete_node(G, node):
         for n1, n2 in itertools.combinations(mem_edges, 2):
             if G.has_edge(n1, n2):
                 G[n1][n2]['members'] |= set([mem])
-                G[n1][n2]['weight'] += 1
+                G[n1][n2]['size'] += 1
             else:
-                G.add_edge(n1, n2, weight=1, members=set([mem]))
+                G.add_edge(n1, n2, size=1, members=set([mem]))
 
     # now remove node
     G.remove_node(node)
@@ -142,9 +227,9 @@ def remove_member_from_node(G, node, member):
         for n1, n2 in itertools.combinations(mem_edges, 2):
             if G.has_edge(n1, n2):
                 G[n1][n2]['members'] |= [member]
-                G[n1][n2]['weight'] += 1
+                G[n1][n2]['size'] += 1
             else:
-                G.add_edge(n1, n2, weight=1, members=set([member]))
+                G.add_edge(n1, n2, size=1, members=set([member]))
 
     # remove member from node
     while str(member) in G.nodes[node]['members']:

@@ -214,7 +214,7 @@ def main():
 
     # convert input GFF3 files into summary files
     process_prokka_input(args.input_files, args.output_dir, (not args.verbose),
-                         args.n_cpu)
+                            args.n_cpu)
 
     # Cluster protein sequences using cdhit
     cd_hit_out = args.output_dir + "combined_protein_cdhit_out.txt"
@@ -238,7 +238,7 @@ def main():
     # merge paralogs
     if args.verbose:
         print("Processing paralogs...")
-    G = collapse_paralogs(G, centroid_contexts, quiet=(not args.verbose))
+    G = collapse_paralogs(G, centroid_contexts, max_context=2, quiet=(not args.verbose))
 
     # write out pre-filter graph in GML format
     for node in G.nodes():

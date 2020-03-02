@@ -27,7 +27,7 @@ def get_mash_dist(input_gffs, outdir, n_cpu=1, quiet=True):
     if not quiet:
         print("running cmd: " + mash_cmd)
 
-    subprocess.run(mash_cmd, shell=True, check=True)
+    # subprocess.run(mash_cmd, shell=True, check=True)
 
     # load distance matrix
     dist_mat = np.zeros((len(input_gffs), len(input_gffs)), dtype=float)

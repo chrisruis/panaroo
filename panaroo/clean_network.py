@@ -1,16 +1,15 @@
 import networkx as nx
 from panaroo.cdhit import *
-from panaroo.merge_nodes import merge_nodes
+from panaroo.merge_nodes import merge_node_cluster 
 from panaroo.isvalid import del_dups, max_clique
 from collections import defaultdict, deque
-from panaroo.cdhit import is_valid
+from panaroo.isvalid import single_source_shortest_path_length_mod
 from itertools import chain, combinations
 import numpy as np
 from scipy.sparse import csr_matrix, csc_matrix
 from scipy.sparse.csgraph import connected_components, shortest_path
 from tqdm import tqdm
-import sys
-
+from time import time
 
 # Genes at the end of contigs are more likely to be false positives thus
 # we can remove those with low support
@@ -126,6 +125,8 @@ def collapse_families(G,
         distances_bwtn_centroids, centroid_to_index = pwdist_edlib(
             G, cdhit_clusters, family_threshold, dna=False, n_cpu=n_cpu)
 
+    print("calculated pairwise distances..")
+
     # keep track of centroids for each sequence. Need this to resolve clashes
     seqid_to_index = {}
     for node in G.nodes():
@@ -140,13 +141,35 @@ def collapse_families(G,
     nonzero_dist = set([(i, j)
                         for i, j in zip(nonzero_dist[0], nonzero_dist[1])])
 
+    # create a dictionary to of node->member->centroids to improve performance
+    # TODO: incoporate this into new node structure in major refactor
+    node_mem_index_dict = defaultdict(lambda: defaultdict(set))
+    for n in G.nodes():
+        for sid in G.nodes[n]['seqIDs']:
+            node_mem_index_dict[n][sid.split("_")[0]].add(seqid_to_index[sid])
+
+
+    print("starting to collapse")
+    tim_sl = 0
+    tim_set_up_minig = 0
+    tim_clique_w_merge=0
+
     for depth in depths:
+        print("processing depth:", depth)
         search_space = set(G.nodes())
         while len(search_space) > 0:
             # look for nodes to merge
             temp_node_list = list(search_space)
             removed_nodes = set()
-            for node in temp_node_list:
+
+            if tim_sl>0: print("tim_sinlge link:", tim_sl)
+            if tim_set_up_minig>0: print("tim_set_up_minig:", tim_set_up_minig)
+            if tim_clique_w_merge>0: print("tim_clique_w_merge:", tim_clique_w_merge)
+            tim_sl = 0
+            tim_set_up_minig = 0
+            tim_clique_w_merge=0
+
+            for node in tqdm(temp_node_list):
                 if node in removed_nodes: continue
 
                 if G.degree[node] <= 2:
@@ -161,8 +184,10 @@ def collapse_families(G,
                 ] + [node]
 
                 # find clusters
+                tim=time()
                 clusters = single_linkage(G, distances_bwtn_centroids,
                                           centroid_to_index, neighbours)
+                tim_sl += time()-tim
 
                 for cluster in clusters:
 
@@ -181,21 +206,11 @@ def collapse_families(G,
                         for neig in cluster:
                             removed_nodes.add(neig)
                             if neig in search_space: search_space.remove(neig)
-                        temp_c = cluster.copy()
-                        G = merge_nodes(
-                            G,
-                            temp_c.pop(),
-                            temp_c.pop(),
-                            node_count,
+                        G = merge_node_cluster(G, cluster, node_count,
                             multi_centroid=(not correct_mistranslations))
-                        while (len(temp_c) > 0):
-                            G = merge_nodes(
-                                G,
-                                node_count,
-                                temp_c.pop(),
-                                node_count + 1,
-                                multi_centroid=(not correct_mistranslations))
-                            node_count += 1
+                        for n in cluster:
+                            for mem in node_mem_index_dict[n]:
+                                node_mem_index_dict[node_count][mem] |= node_mem_index_dict[n][mem]
                         search_space.add(node_count)
                     else:
                         # merge if the centroids don't conflict and the nodes are adjacent in the conflicting genome
@@ -203,6 +218,8 @@ def collapse_families(G,
                         # into two in a subset of genomes
 
                         # build a mini graph of allowed pairwise merges
+                        tim=time()
+
                         tempG = nx.Graph()
                         for nA, nB in itertools.combinations(cluster, 2):
                             mem_inter = G.nodes[nA]['members'].intersection(
@@ -216,42 +233,59 @@ def collapse_families(G,
                                             set(G.nodes[nB]['centroid']))) > 0:
                                     shouldmerge = False
 
-                                if shouldmerge:
-                                    idsA = defaultdict(list)
-                                    for sid in G.nodes[nA]['seqIDs']:
-                                        ssid = sid.split("_")
-                                        if ssid[0] in mem_inter:
-                                            idsA[ssid[0]].append(sid)
-
-                                    idsB = defaultdict(list)
-                                    for sid in G.nodes[nB]['seqIDs']:
-                                        ssid = sid.split("_")
-                                        if ssid[0] in mem_inter:
-                                            idsB[ssid[0]].append(sid)
-
-                                    for imem in mem_inter:
-                                        for sidA in set([
-                                                seqid_to_index[sid]
-                                                for sid in idsA[imem]
-                                        ]):
-                                            for sidB in set([
-                                                    seqid_to_index[sid]
-                                                    for sid in idsB[imem]
-                                            ]):
-                                                if (
-                                                    (sidA,
-                                                     sidB) in nonzero_dist
-                                                ) or ((sidB,
-                                                       sidA) in nonzero_dist):
-                                                    shouldmerge = False
-                                                    break
+                                    if shouldmerge:
+                                        for imem in mem_inter:
+                                            for sidA in node_mem_index_dict[nA][imem]:
+                                                for sidB in node_mem_index_dict[nB][imem]:
+                                                    if (
+                                                        (sidA,
+                                                        sidB) in nonzero_dist
+                                                    ) or ((sidB,
+                                                        sidA) in nonzero_dist):
+                                                        shouldmerge = False
+                                                        break
+                                                if not shouldmerge: break
                                             if not shouldmerge: break
-                                        if not shouldmerge: break
 
                                 if shouldmerge:
                                     tempG.add_edge(nA, nB)
                             else:
                                 tempG.add_edge(nA, nB)
+
+                                # if shouldmerge:
+                                #     idsA = defaultdict(list)
+                                #     for sid in G.nodes[nA]['seqIDs']:
+                                #         ssid = sid.split("_")
+                                #         if ssid[0] in mem_inter:
+                                #             idsA[ssid[0]].append(sid)
+
+                                #     idsB = defaultdict(list)
+                                #     for sid in G.nodes[nB]['seqIDs']:
+                                #         ssid = sid.split("_")
+                                #         if ssid[0] in mem_inter:
+                                #             idsB[ssid[0]].append(sid)
+
+                                #     for imem in mem_inter:
+                                #         for sidA in set([
+                                #                 seqid_to_index[sid]
+                                #                 for sid in idsA[imem]
+                                #         ]):
+                                #             for sidB in set([
+                                #                     seqid_to_index[sid]
+                                #                     for sid in idsB[imem]
+                                #             ]):
+                                #                 if (
+                                #                     (sidA,
+                                #                      sidB) in nonzero_dist
+                                #                 ) or ((sidB,
+                                #                        sidA) in nonzero_dist):
+                                #                     shouldmerge = False
+                                #                     break
+                                #             if not shouldmerge: break
+                                #         if not shouldmerge: break
+
+                        tim_set_up_minig += time()-tim
+                        tim=time()
 
                         # merge from largest clique to smallest
                         sys.setrecursionlimit(max(len(tempG.nodes), 10000))
@@ -268,28 +302,17 @@ def collapse_families(G,
                                     if neig in search_space:
                                         search_space.remove(neig)
 
-                                temp_c = clust.copy()
-                                G = merge_nodes(
-                                    G,
-                                    temp_c.pop(),
-                                    temp_c.pop(),
-                                    node_count,
-                                    multi_centroid=(
-                                        not correct_mistranslations),
-                                    check_merge_mems=False)
-                                while (len(temp_c) > 0):
-                                    G = merge_nodes(
-                                        G,
-                                        node_count,
-                                        temp_c.pop(),
-                                        node_count + 1,
-                                        multi_centroid=(
-                                            not correct_mistranslations),
+                                G = merge_node_cluster(G, clust, node_count,
+                                        multi_centroid=(not correct_mistranslations),
                                         check_merge_mems=False)
-                                    node_count += 1
+                                for n in clust:
+                                    for mem in node_mem_index_dict[n]:
+                                        node_mem_index_dict[node_count][mem] |= node_mem_index_dict[n][mem]
                                 search_space.add(node_count)
                             tempG.remove_nodes_from(clique)
                             clique = max_clique(tempG)
+                        
+                        tim_clique_w_merge += time()-tim
 
                 if node in search_space:
                     search_space.remove(node)
@@ -297,7 +320,7 @@ def collapse_families(G,
     return G, distances_bwtn_centroids, centroid_to_index
 
 
-def collapse_paralogs(G, centroid_contexts, max_context=5, quiet=False):
+def collapse_paralogs(G, centroid_contexts, max_context=2, quiet=False):
 
     node_count = max(list(G.nodes())) + 10
 
@@ -321,78 +344,124 @@ def collapse_paralogs(G, centroid_contexts, max_context=5, quiet=False):
     ncentroids += 1
 
     for centroid in tqdm(centroid_contexts, disable=quiet):
+        print("preparing..")
+        print("Number of nodes in G:", len(G.nodes()))
+        tim=time()
         # calculate distance
         member_paralogs = defaultdict(list)
+        para_nodes = set()
         for para in centroid_contexts[centroid]:
             member_paralogs[para[1]].append(para)
+            para_nodes.add(para[0])
+        para_nodes = sorted(list(para_nodes), key=lambda x: G.nodes[x]['size'], reverse=True)
 
         ref_paralogs = max(member_paralogs.items(), key=lambda x: len(x[1]))[1]
+        ref_paralogs = [ref[0] for ref in ref_paralogs]
+        ref_paralogs = sorted(ref_paralogs, key=lambda x: G.nodes[x]['size'], reverse=True)
+
+        ref_path_lengths = []
+        for ref in ref_paralogs:
+            ref_path_lengths.append(single_source_shortest_path_length_mod(G, ref, para_nodes))
+
         # for each paralog find its closest reference paralog
         cluster_dict = defaultdict(set)
         cluster_mems = defaultdict(set)
         for c, ref in enumerate(ref_paralogs):
-            cluster_dict[c].add(ref[0])
-            cluster_mems[c].add(ref[1])
+            cluster_dict[c].add(ref)
+            cluster_mems[c] = G.nodes[ref]['members']
+        print("prepared in ", time()-tim)
 
-        for para in centroid_contexts[centroid]:
-            d_max = np.inf
-            s_max = -np.inf
-            best_cluster = None
-
-            if para[1] == ref_paralogs[0][1]:
-                # this is the reference so skip
-                continue
-
-            # first attempt by shortest path
+        print("finding location..")
+        tim_sp = 0
+        n_sp_searches = 0
+        tim_cont = 0
+        for ip, para in enumerate(para_nodes):
+            if para in ref_paralogs: continue # as this is the reference
+            distances = []
+            
+            # calculate path distances
+            tim=time()
             for c, ref in enumerate(ref_paralogs):
-                if para[1] in cluster_mems[c]:
-                    #dont match paralogs of the same isolate
-                    continue
-                # d = spath[para[0], ref[0]]
-                # d = gt.shortest_distance(Gt, para[0], ref[0])
-                try:
-                    d = nx.shortest_path_length(G, ref[0], para[0])
-                except nx.NetworkXNoPath:
-                    continue
-                if d < d_max:
-                    d_max = d
-                    best_cluster = c
+                n_sp_searches+=1
+                if para in ref_path_lengths[c]:
+                    distances.append((ref_path_lengths[c][para], c))
+                else:
+                    distances.append((np.inf, c))
+                # try:
+                #     distances.append((nx.shortest_path_length(G, ref, para), c))
+                # except nx.NetworkXNoPath:
+                #     distances.append((np.inf, c))
+            
+            distances = sorted(distances)
+            tim_sp += time()-tim
 
-            # if this fails use context
-            if d_max == np.inf:
-                best_cluster = 0
+            # check if a merge is possible
+            best_cluster = None
+            for dist, c in distances:
+                if dist==np.inf: break
+                if len(cluster_mems[c].intersection(G.nodes[para]['members']))==0:
+                    best_cluster = c
+                    cluster_mems[c] = cluster_mems[c] | G.nodes[para]['members']
+                    break
+            
+            # if merge based on shortest path failed use context
+            tim=time()
+            if best_cluster is None:
+                distances = []
+
                 s_max = -np.inf
                 para_context = np.zeros(ncentroids)
-                for u, node, depth in mod_bfs_edges(G, para[0], max_context):
+                for u, node, depth in mod_bfs_edges(G, para, max_context):
                     para_context[centroid_to_index[G.nodes[node]['centroid']
                                                    [0]]] = depth
+                
                 for c, ref in enumerate(ref_paralogs):
-                    if para[1] in cluster_mems[c]:
+                    if para in G.nodes[ref_paralogs[c]]['members']:
                         #dont match paralogs of the same isolate
                         continue
                     ref_context = np.zeros(ncentroids)
                     for u, node, depth in mod_bfs_edges(
-                            G, ref[0], max_context):
+                            G, ref, max_context):
                         ref_context[centroid_to_index[G.nodes[node]['centroid']
                                                       [0]]] = depth
-                    s = np.sum(1 / (1 + np.abs((para_context - ref_context)[
+                    d = 1 - np.sum(1 / (1 + np.abs((para_context - ref_context)[
                         (para_context * ref_context) != 0])))
-                    if s > s_max:
-                        s_max = s
-                        best_cluster = c
+                    distances.append((d, c))
 
-            cluster_dict[best_cluster].add(para[0])
-            cluster_mems[best_cluster].add(para[1])
+                distances = sorted(distances)
+                for dist, c in distances:
+                    if dist==np.inf: break
+                    if len(cluster_mems[c].intersection(G.nodes[para]['members']))==0:
+                        best_cluster = c
+                        cluster_mems[c] = cluster_mems[c] | G.nodes[para]['members']
+                        break
+
+            tim_cont += time()-tim
+
+            if best_cluster is None:
+                # we couldn't merge due to conflict so add additional reference node.
+                ref_paralogs.append(para)
+                ref_path_lengths.append(single_source_shortest_path_length_mod(G, para, para_nodes[ip:]))
+                cluster_mems[len(ref_paralogs)-1] = G.nodes[para]['members']
+                best_cluster = len(ref_paralogs)-1
+
+            cluster_dict[best_cluster].add(para)
+        
+        print("shortest path ", tim_sp)
+        print("number shortest path searches ", n_sp_searches)
+        print("context ", tim_cont)
 
         # merge
+        print("merging..")
+        tim=time()
         for cluster in cluster_dict:
             if len(cluster_dict[cluster]) < 2: continue
-            temp_c = list(cluster_dict[cluster].copy())
             node_count += 1
-            G = merge_nodes(G, temp_c.pop(), temp_c.pop(), node_count)
-            while (len(temp_c) > 0):
-                G = merge_nodes(G, node_count, temp_c.pop(), node_count + 1)
-                node_count += 1
+            G = merge_node_cluster(G,
+                    cluster_dict[cluster],
+                    node_count)
+        print("merge completed in ", time()-tim)
+
 
     return (G)
 
@@ -431,18 +500,8 @@ def merge_paralogs(G):
     for temp_c in merge_clusters:
         if len(temp_c) > 1:
             node_count += 1
-            G = merge_nodes(G,
-                            temp_c.pop(),
-                            temp_c.pop(),
-                            node_count,
+            G = merge_node_cluster(G, temp_c, node_count,
                             check_merge_mems=False)
-            while (len(temp_c) > 0):
-                G = merge_nodes(G,
-                                node_count,
-                                temp_c.pop(),
-                                node_count + 1,
-                                check_merge_mems=False)
-                node_count += 1
 
     return (G)
 
@@ -457,14 +516,14 @@ def clean_misassembly_edges(G, edge_support_threshold):
         max_weight = max(max_weight, G.nodes[node]['size'])
         for neigh in G.neighbors(node):
             if G.nodes[neigh]['hasEnd']:
-                if G[node][neigh]['weight'] < edge_support_threshold:
+                if G[node][neigh]['size'] < edge_support_threshold:
                     bad_edges.add((node, neigh))
 
     # remove edges that have much lower support than the nodes they connect
     for edge in G.edges():
-        if float(G.edges[edge]['weight']) < (0.05 * min(
+        if float(G.edges[edge]['size']) < (0.05 * min(
                 int(G.nodes[edge[0]]['size']), int(G.nodes[edge[1]]['size']))):
-            if float(G.edges[edge]['weight']) < edge_support_threshold:
+            if float(G.edges[edge]['size']) < edge_support_threshold:
                 bad_edges.add(edge)
 
     for edge in bad_edges:
