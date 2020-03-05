@@ -97,11 +97,17 @@ def collapse_families(G,
     node_count = max(list(G.nodes())) + 10
 
     if correct_mistranslations:
-        depths = [1, 2, 3]
         threshold = [0.99, 0.98, 0.95, 0.9]
     else:
-        depths = [1, 2, 3]
         threshold = [0.99, 0.95, 0.9, 0.8, 0.7, 0.6, 0.5]
+
+    if G.number_of_nodes()>1e4:
+        if not quiet:
+            print(("Processing very large and diverse graph! " +
+                "Reducing the neighbourhood search size."))
+        depths = [1, 2]
+    else:
+        depths = [1, 2, 3]
 
     # precluster for speed
     if correct_mistranslations:
@@ -168,6 +174,8 @@ def collapse_families(G,
             tim_sl = 0
             tim_set_up_minig = 0
             tim_clique_w_merge=0
+            tim_mx_cli = 0
+            tim_sing2 = 0
 
             for node in tqdm(temp_node_list):
                 if node in removed_nodes: continue
@@ -251,6 +259,10 @@ def collapse_families(G,
                                     tempG.add_edge(nA, nB)
                             else:
                                 tempG.add_edge(nA, nB)
+                        
+                        # add size information to temp graph
+                        for n in tempG:
+                            tempG.nodes[n]['size'] = G.nodes[n]['size']
 
                                 
 
@@ -259,11 +271,15 @@ def collapse_families(G,
 
                         # merge from largest clique to smallest
                         sys.setrecursionlimit(max(len(tempG.nodes), 10000))
+                        timc = time()
                         clique = max_clique(tempG)
+                        tim_mx_cli += time()-timc
                         while len(clique) > 1:
+                            tims = time()
                             clique_clusters = single_linkage(
                                 G, distances_bwtn_centroids, centroid_to_index,
                                 clique)
+                            tim_sing2 += time()-tims
                             for clust in clique_clusters:
                                 if len(clust) <= 1: continue
                                 node_count += 1
@@ -280,12 +296,17 @@ def collapse_families(G,
                                         node_mem_index_dict[node_count][mem] |= node_mem_index_dict[n][mem]
                                 search_space.add(node_count)
                             tempG.remove_nodes_from(clique)
+                            timc = time()
                             clique = max_clique(tempG)
+                            tim_mx_cli += time()-timc
                         
                         tim_clique_w_merge += time()-tim
 
                 if node in search_space:
                     search_space.remove(node)
+
+            print("tim_mx_cli:", tim_mx_cli)
+            print("tim_sing2:", tim_sing2)
 
     return G, distances_bwtn_centroids, centroid_to_index
 
