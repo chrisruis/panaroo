@@ -6,7 +6,7 @@ from collections import defaultdict, deque
 from panaroo.isvalid import single_source_shortest_path_length_mod
 from itertools import chain, combinations
 import numpy as np
-from scipy.sparse import csr_matrix, csc_matrix
+from scipy.sparse import csr_matrix, lil_matrix
 from scipy.sparse.csgraph import connected_components, shortest_path
 from tqdm import tqdm
 from time import time
@@ -86,6 +86,7 @@ def single_linkage(G, distances_bwtn_centroids, centroid_to_index, neighbours):
 def collapse_families(G,
                       seqid_to_centroid,
                       outdir,
+                      ngenomes,
                       family_threshold=0.7,
                       dna_error_threshold=0.99,
                       correct_mistranslations=False,
@@ -134,31 +135,38 @@ def collapse_families(G,
     print("calculated pairwise distances..")
 
     # keep track of centroids for each sequence. Need this to resolve clashes
-    seqid_to_index = {}
-    for node in G.nodes():
-        for sid in G.nodes[node]['seqIDs']:
-            if "refound" in sid:
-                seqid_to_index[sid] = centroid_to_index[G.nodes[node]
-                                                        ["longCentroidID"][1]]
-            else:
-                seqid_to_index[sid] = centroid_to_index[seqid_to_centroid[sid]]
+    # seqid_to_index = {}
+    # for node in G.nodes():
+    #     for sid in G.nodes[node]['seqIDs']:
+    #         if "refound" in sid:
+    #             seqid_to_index[sid] = centroid_to_index[G.nodes[node]
+    #                                                     ["longCentroidID"][1]]
+    #         else:
+    #             seqid_to_index[sid] = centroid_to_index[seqid_to_centroid[sid]]
 
-    nonzero_dist = distances_bwtn_centroids.nonzero()
-    nonzero_dist = set([(i, j)
-                        for i, j in zip(nonzero_dist[0], nonzero_dist[1])])
+    # nonzero_dist = distances_bwtn_centroids.nonzero()
+    # nonzero_dist = set([(i, j)
+    #                     for i, j in zip(nonzero_dist[0], nonzero_dist[1])])
+    # for i,j in nonzero_dist:
+    #     nonzero_dist.add((j,i))
 
     # create a dictionary to of node->member->centroids to improve performance
     # TODO: incoporate this into new node structure in major refactor
-    node_mem_index_dict = defaultdict(lambda: defaultdict(set))
+    node_mem_index_dict = {}
     for n in G.nodes():
+        node_mem_index_dict[n] = lil_matrix((ngenomes, distances_bwtn_centroids.shape[0]), dtype=bool)
         for sid in G.nodes[n]['seqIDs']:
-            node_mem_index_dict[n][sid.split("_")[0]].add(seqid_to_index[sid])
-
+            if "refound" in sid:
+                index = centroid_to_index[G.nodes[n]["longCentroidID"][1]]
+            else:
+                index = centroid_to_index[seqid_to_centroid[sid]]
+            genome = int(sid.split("_")[0])
+            node_mem_index_dict[n][genome,index] = True#distances_bwtn_centroids[index,:]
+        node_mem_index_dict[n] = node_mem_index_dict[n].tocsr()
 
     print("starting to collapse")
     tim_sl = 0
-    tim_set_up_minig = 0
-    tim_clique_w_merge=0
+    tim_tricky_merge = 0
 
     for depth in depths:
         print("processing depth:", depth)
@@ -169,13 +177,10 @@ def collapse_families(G,
             removed_nodes = set()
 
             if tim_sl>0: print("tim_sinlge link:", tim_sl)
-            if tim_set_up_minig>0: print("tim_set_up_minig:", tim_set_up_minig)
-            if tim_clique_w_merge>0: print("tim_clique_w_merge:", tim_clique_w_merge)
+            if tim_tricky_merge>0: print("tim_tricky_merge:", tim_tricky_merge)
             tim_sl = 0
-            tim_set_up_minig = 0
-            tim_clique_w_merge=0
-            tim_mx_cli = 0
-            tim_sing2 = 0
+            tim_tricky_merge = 0
+
 
             for node in tqdm(temp_node_list):
                 if node in removed_nodes: continue
@@ -216,9 +221,12 @@ def collapse_families(G,
                             if neig in search_space: search_space.remove(neig)
                         G = merge_node_cluster(G, cluster, node_count,
                             multi_centroid=(not correct_mistranslations))
+                        node_mem_index_dict[node_count] = lil_matrix((ngenomes, distances_bwtn_centroids.shape[0]), dtype=bool)
                         for n in cluster:
-                            for mem in node_mem_index_dict[n]:
-                                node_mem_index_dict[node_count][mem] |= node_mem_index_dict[n][mem]
+                            node_mem_index_dict[node_count] += node_mem_index_dict[n]
+                        node_mem_index_dict[node_count] = node_mem_index_dict[node_count].tocsr()
+                            # for mem in node_mem_index_dict[n]:
+                            #     node_mem_index_dict[node_count][mem] |= node_mem_index_dict[n][mem]
                         search_space.add(node_count)
                     else:
                         # merge if the centroids don't conflict and the nodes are adjacent in the conflicting genome
@@ -227,86 +235,78 @@ def collapse_families(G,
 
                         # build a mini graph of allowed pairwise merges
                         tim=time()
-
-                        tempG = nx.Graph()
-                        for nA, nB in itertools.combinations(cluster, 2):
-                            mem_inter = G.nodes[nA]['members'].intersection(
-                                G.nodes[nB]['members'])
-                            if len(mem_inter) > 0:
-
-                                shouldmerge = True
-                                if len(
-                                        set(G.nodes[nA]['centroid']).
-                                        intersection(
-                                            set(G.nodes[nB]['centroid']))) > 0:
-                                    shouldmerge = False
-
-                                if shouldmerge:
-                                    for imem in mem_inter:
-                                        for sidA in node_mem_index_dict[nA][imem]:
-                                            for sidB in node_mem_index_dict[nB][imem]:
-                                                if (
-                                                    (sidA,
-                                                    sidB) in nonzero_dist
-                                                ) or ((sidB,
-                                                    sidA) in nonzero_dist):
-                                                    shouldmerge = False
-                                                    break
-                                            if not shouldmerge: break
-                                        if not shouldmerge: break
-
-                                if shouldmerge:
-                                    tempG.add_edge(nA, nB)
-                            else:
-                                tempG.add_edge(nA, nB)
                         
-                        # add size information to temp graph
-                        for n in tempG:
-                            tempG.nodes[n]['size'] = G.nodes[n]['size']
+                        cluster = sorted(cluster, key=lambda x: G.nodes[x]['size'], reverse=True)
 
-                                
+                        while len(cluster) > 0:
 
-                        tim_set_up_minig += time()-tim
-                        tim=time()
+                            sub_clust = set([cluster[0]])
 
-                        # merge from largest clique to smallest
-                        sys.setrecursionlimit(max(len(tempG.nodes), 10000))
-                        timc = time()
-                        clique = max_clique(tempG)
-                        tim_mx_cli += time()-timc
-                        while len(clique) > 1:
-                            tims = time()
-                            clique_clusters = single_linkage(
-                                G, distances_bwtn_centroids, centroid_to_index,
-                                clique)
-                            tim_sing2 += time()-tims
-                            for clust in clique_clusters:
-                                if len(clust) <= 1: continue
-                                node_count += 1
-                                for neig in clust:
-                                    removed_nodes.add(neig)
-                                    if neig in search_space:
-                                        search_space.remove(neig)
+                            for n in cluster[1:]:
+                                should_add = True
+                                for n_sub in sub_clust:
+                                    mem_inter = G.nodes[n]['members'].intersection(G.nodes[n_sub]['members'])
+                                    if len(mem_inter) > 0:
+                                        if len(
+                                            set(G.nodes[n]['centroid']).
+                                            intersection(
+                                                set(G.nodes[n_sub]['centroid']))) > 0:
+                                                should_add = False
+                                                break
+                                        print(np.sum(node_mem_index_dict[n].todense()))
+                                        if np.sum(node_mem_index_dict[n].multiply(node_mem_index_dict[n_sub]*distances_bwtn_centroids))>0:
+                                            print(np.sum(node_mem_index_dict[n].multiply(node_mem_index_dict[n_sub])))
+                                            print(should_add)
+                                            print("HERRE!!")
+                                            should_add = False
+                                            break
+                                        # if len(
+                                        #     set(G.nodes[n]['centroid']).
+                                        #     intersection(
+                                        #         set(G.nodes[n_sub]['centroid']))) > 0:
+                                        #       should_add = False
+                                        #       break
+                                    # for imem in mem_inter:
+                                    #     for sidA in node_mem_index_dict[n][imem]:
+                                    #         for sidB in node_mem_index_dict[n_sub][imem]:
+                                    #             if (sidA, sidB) in nonzero_dist:
+                                    #                 should_add = False
+                                    #                 break
+                                    #         if not should_add: break
+                                    #     if not should_add: break
+                                    # if not should_add: break
+                                if should_add:
+                                    sub_clust.add(n)
 
-                                G = merge_node_cluster(G, clust, node_count,
-                                        multi_centroid=(not correct_mistranslations),
-                                        check_merge_mems=False)
-                                for n in clust:
-                                    for mem in node_mem_index_dict[n]:
-                                        node_mem_index_dict[node_count][mem] |= node_mem_index_dict[n][mem]
-                                search_space.add(node_count)
-                            tempG.remove_nodes_from(clique)
-                            timc = time()
-                            clique = max_clique(tempG)
-                            tim_mx_cli += time()-timc
-                        
-                        tim_clique_w_merge += time()-tim
+                            if len(sub_clust)>1:
+                                clique_clusters = single_linkage(
+                                    G, distances_bwtn_centroids, centroid_to_index,
+                                    sub_clust)
+                                for clust in clique_clusters:
+                                    if len(clust) <= 1: continue
+                                    node_count += 1
+                                    for neig in clust:
+                                        removed_nodes.add(neig)
+                                        if neig in search_space:
+                                            search_space.remove(neig)
+
+                                    G = merge_node_cluster(G, clust, node_count,
+                                            multi_centroid=(not correct_mistranslations),
+                                            check_merge_mems=False)
+                                    node_mem_index_dict[node_count] = lil_matrix((ngenomes, distances_bwtn_centroids.shape[0]), dtype=bool)
+                                    for n in clust:
+                                        node_mem_index_dict[node_count] += node_mem_index_dict[n]
+                                    node_mem_index_dict[node_count] = node_mem_index_dict[node_count].tocsr()
+                                        # for mem in node_mem_index_dict[n]:
+                                        #     node_mem_index_dict[node_count][mem] |= node_mem_index_dict[n][mem]
+                                    search_space.add(node_count)
+
+                            cluster = [n for n in cluster if n not in sub_clust]
+                    
+                        tim_tricky_merge += time()-tim
 
                 if node in search_space:
                     search_space.remove(node)
-
-            print("tim_mx_cli:", tim_mx_cli)
-            print("tim_sing2:", tim_sing2)
 
     return G, distances_bwtn_centroids, centroid_to_index
 

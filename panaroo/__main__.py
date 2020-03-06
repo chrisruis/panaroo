@@ -213,17 +213,17 @@ def main():
         print("pre-processing gff3 files...")
 
     # convert input GFF3 files into summary files
-    # process_prokka_input(args.input_files, args.output_dir, (not args.verbose),
-    #                         args.n_cpu)
+    process_prokka_input(args.input_files, args.output_dir, (not args.verbose),
+                            args.n_cpu)
 
     # Cluster protein sequences using cdhit
     cd_hit_out = args.output_dir + "combined_protein_cdhit_out.txt"
-    # run_cdhit(input_file=args.output_dir + "combined_protein_CDS.fasta",
-    #           output_file=cd_hit_out,
-    #           id=args.id,
-    #           s=args.len_dif_percent,
-    #           quiet=(not args.verbose),
-    #           n_cpu=args.n_cpu)
+    run_cdhit(input_file=args.output_dir + "combined_protein_CDS.fasta",
+              output_file=cd_hit_out,
+              id=args.id,
+              s=args.len_dif_percent,
+              quiet=(not args.verbose),
+              n_cpu=args.n_cpu)
 
     if args.verbose:
         print("generating initial network...")
@@ -261,6 +261,7 @@ def main():
     G = collapse_families(G,
                           seqid_to_centroid=seqid_to_centroid,
                           outdir=temp_dir,
+                          ngenomes=len(args.input_files),
                           dna_error_threshold=0.98,
                           correct_mistranslations=True,
                           n_cpu=args.n_cpu,
@@ -274,6 +275,7 @@ def main():
         G,
         seqid_to_centroid=seqid_to_centroid,
         outdir=temp_dir,
+        ngenomes=len(args.input_files),
         family_threshold=args.family_threshold,
         correct_mistranslations=False,
         n_cpu=args.n_cpu,
@@ -311,6 +313,7 @@ def main():
     G = collapse_families(G,
                           seqid_to_centroid=seqid_to_centroid,
                           outdir=temp_dir,
+                          ngenomes=len(args.input_files),
                           family_threshold=args.family_threshold,
                           correct_mistranslations=False,
                           n_cpu=args.n_cpu,
