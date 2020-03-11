@@ -1,6 +1,6 @@
 import networkx as nx
 from panaroo.cdhit import *
-from panaroo.merge_nodes import merge_node_cluster 
+from panaroo.merge_nodes import merge_node_cluster, gen_node_iterables
 from panaroo.isvalid import del_dups, max_clique
 from collections import defaultdict, deque
 from panaroo.isvalid import single_source_shortest_path_length_mod
@@ -82,7 +82,11 @@ def single_linkage(G, distances_bwtn_centroids, centroid_to_index, neighbours):
 
     return (clusters)
 
+def sub_dict_iter(d, keys):
+    for n in keys:
+        yield d[n]
 
+# @profile
 def collapse_families(G,
                       seqid_to_centroid,
                       outdir,
@@ -135,34 +139,27 @@ def collapse_families(G,
     print("calculated pairwise distances..")
 
     # keep track of centroids for each sequence. Need this to resolve clashes
-    # seqid_to_index = {}
-    # for node in G.nodes():
-    #     for sid in G.nodes[node]['seqIDs']:
-    #         if "refound" in sid:
-    #             seqid_to_index[sid] = centroid_to_index[G.nodes[node]
-    #                                                     ["longCentroidID"][1]]
-    #         else:
-    #             seqid_to_index[sid] = centroid_to_index[seqid_to_centroid[sid]]
-
-    # nonzero_dist = distances_bwtn_centroids.nonzero()
-    # nonzero_dist = set([(i, j)
-    #                     for i, j in zip(nonzero_dist[0], nonzero_dist[1])])
-    # for i,j in nonzero_dist:
-    #     nonzero_dist.add((j,i))
-
-    # create a dictionary to of node->member->centroids to improve performance
     # TODO: incoporate this into new node structure in major refactor
     node_mem_index_dict = {}
+    distances_bwtn_centroids = distances_bwtn_centroids + distances_bwtn_centroids.T
+    index_summary = defaultdict(set)
+    node_mem_index_sets = defaultdict(set)
     for n in G.nodes():
-        node_mem_index_dict[n] = lil_matrix((ngenomes, distances_bwtn_centroids.shape[0]), dtype=bool)
+        nz_row = []
+        nz_col = []
         for sid in G.nodes[n]['seqIDs']:
             if "refound" in sid:
                 index = centroid_to_index[G.nodes[n]["longCentroidID"][1]]
             else:
                 index = centroid_to_index[seqid_to_centroid[sid]]
             genome = int(sid.split("_")[0])
-            node_mem_index_dict[n][genome,index] = True#distances_bwtn_centroids[index,:]
-        node_mem_index_dict[n] = node_mem_index_dict[n].tocsr()
+            nz_row.append(genome)
+            nz_col.append(index)
+        node_mem_index_dict[n] = csr_matrix((np.ones(len(nz_col)), (nz_row, nz_col)),
+            shape=(ngenomes, distances_bwtn_centroids.shape[0]), dtype=bool)
+        node_mem_index_sets[n] = set(zip(*node_mem_index_dict[n].nonzero()))
+        index_summary[n] = node_mem_index_dict[n]*distances_bwtn_centroids
+        index_summary[n] = set(zip(*index_summary[n].nonzero()))
 
     print("starting to collapse")
     tim_sl = 0
@@ -208,6 +205,7 @@ def collapse_families(G,
                     if len(cluster) <= 1: continue
 
                     # check for conflicts
+                    # check for conflicts
                     members = []
                     for n in cluster:
                         for m in G.nodes[n]['members']:
@@ -221,12 +219,13 @@ def collapse_families(G,
                             if neig in search_space: search_space.remove(neig)
                         G = merge_node_cluster(G, cluster, node_count,
                             multi_centroid=(not correct_mistranslations))
-                        node_mem_index_dict[node_count] = lil_matrix((ngenomes, distances_bwtn_centroids.shape[0]), dtype=bool)
-                        for n in cluster:
-                            node_mem_index_dict[node_count] += node_mem_index_dict[n]
-                        node_mem_index_dict[node_count] = node_mem_index_dict[node_count].tocsr()
-                            # for mem in node_mem_index_dict[n]:
-                            #     node_mem_index_dict[node_count][mem] |= node_mem_index_dict[n][mem]
+                        
+                        index_summary[node_count] = set(itertools.chain.from_iterable(sub_dict_iter(index_summary, cluster)))
+                        node_mem_index_sets[node_count] = set(itertools.chain.from_iterable(sub_dict_iter(node_mem_index_sets, cluster)))
+                        # for n in cluster:
+                        #     index_summary.pop(n, None)
+                        #     node_mem_index_sets.pop(n, None)
+
                         search_space.add(node_count)
                     else:
                         # merge if the centroids don't conflict and the nodes are adjacent in the conflicting genome
@@ -237,6 +236,8 @@ def collapse_families(G,
                         tim=time()
                         
                         cluster = sorted(cluster, key=lambda x: G.nodes[x]['size'], reverse=True)
+
+                        
 
                         while len(cluster) > 0:
 
@@ -253,28 +254,10 @@ def collapse_families(G,
                                                 set(G.nodes[n_sub]['centroid']))) > 0:
                                                 should_add = False
                                                 break
-                                        print(np.sum(node_mem_index_dict[n].todense()))
-                                        if np.sum(node_mem_index_dict[n].multiply(node_mem_index_dict[n_sub]*distances_bwtn_centroids))>0:
-                                            print(np.sum(node_mem_index_dict[n].multiply(node_mem_index_dict[n_sub])))
-                                            print(should_add)
-                                            print("HERRE!!")
+                                        if len(node_mem_index_sets[n_sub].intersection(index_summary[n]))>0:
                                             should_add = False
                                             break
-                                        # if len(
-                                        #     set(G.nodes[n]['centroid']).
-                                        #     intersection(
-                                        #         set(G.nodes[n_sub]['centroid']))) > 0:
-                                        #       should_add = False
-                                        #       break
-                                    # for imem in mem_inter:
-                                    #     for sidA in node_mem_index_dict[n][imem]:
-                                    #         for sidB in node_mem_index_dict[n_sub][imem]:
-                                    #             if (sidA, sidB) in nonzero_dist:
-                                    #                 should_add = False
-                                    #                 break
-                                    #         if not should_add: break
-                                    #     if not should_add: break
-                                    # if not should_add: break
+                                    if not should_add: break
                                 if should_add:
                                     sub_clust.add(n)
 
@@ -293,12 +276,12 @@ def collapse_families(G,
                                     G = merge_node_cluster(G, clust, node_count,
                                             multi_centroid=(not correct_mistranslations),
                                             check_merge_mems=False)
-                                    node_mem_index_dict[node_count] = lil_matrix((ngenomes, distances_bwtn_centroids.shape[0]), dtype=bool)
-                                    for n in clust:
-                                        node_mem_index_dict[node_count] += node_mem_index_dict[n]
-                                    node_mem_index_dict[node_count] = node_mem_index_dict[node_count].tocsr()
-                                        # for mem in node_mem_index_dict[n]:
-                                        #     node_mem_index_dict[node_count][mem] |= node_mem_index_dict[n][mem]
+                                    index_summary[node_count] = set(itertools.chain.from_iterable(sub_dict_iter(index_summary, clust)))
+                                    node_mem_index_sets[node_count] = set(itertools.chain.from_iterable(sub_dict_iter(node_mem_index_sets, clust)))
+                                    # for n in clust:
+                                    #     index_summary.pop(n, None)
+                                    #     node_mem_index_sets.pop(n, None)
+                                    
                                     search_space.add(node_count)
 
                             cluster = [n for n in cluster if n not in sub_clust]

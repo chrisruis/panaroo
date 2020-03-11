@@ -18,7 +18,8 @@ from .generate_alignments import check_aligner_install
 
 from .__init__ import __version__
 
-
+import pickle
+    
 def get_options(args):
     import argparse
 
@@ -238,7 +239,7 @@ def main():
     # merge paralogs
     if args.verbose:
         print("Processing paralogs...")
-    G = collapse_paralogs(G, centroid_contexts, max_context=2, quiet=(not args.verbose))
+    # G = collapse_paralogs(G, centroid_contexts, max_context=2, quiet=(not args.verbose))
 
     # write out pre-filter graph in GML format
     for node in G.nodes():
@@ -257,6 +258,11 @@ def main():
     if args.verbose:
         print("collapse mistranslations...")
 
+    # pickle.dump( G, open( args.output_dir + "testGraph.p", "wb" ) )
+    # pickle.dump( seqid_to_centroid, open( args.output_dir + "seqid_to_centroid.p", "wb" ) )
+    # G = pickle.load( open( args.output_dir + "testGraph.p", "rb" ) )
+    # seqid_to_centroid = pickle.load( open( args.output_dir + "seqid_to_centroid.p", "rb" ) )
+
     # clean up translation errors
     G = collapse_families(G,
                           seqid_to_centroid=seqid_to_centroid,
@@ -266,6 +272,11 @@ def main():
                           correct_mistranslations=True,
                           n_cpu=args.n_cpu,
                           quiet=(not args.verbose))[0]
+
+    # pickle.dump( G, open( args.output_dir + "testGraph2.p", "wb" ) )
+    # pickle.dump( seqid_to_centroid, open( args.output_dir + "seqid_to_centroid2.p", "wb" ) )
+    # G = pickle.load( open( args.output_dir + "testGraph2.p", "rb" ) )
+    # seqid_to_centroid = pickle.load( open( args.output_dir + "seqid_to_centroid2.p", "rb" ) )
 
     if args.verbose:
         print("collapse gene families...")
