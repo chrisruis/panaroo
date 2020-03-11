@@ -239,7 +239,7 @@ def main():
     # merge paralogs
     if args.verbose:
         print("Processing paralogs...")
-    # G = collapse_paralogs(G, centroid_contexts, max_context=2, quiet=(not args.verbose))
+    G = collapse_paralogs(G, centroid_contexts, max_context=2, quiet=(not args.verbose))
 
     # write out pre-filter graph in GML format
     for node in G.nodes():

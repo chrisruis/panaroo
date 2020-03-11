@@ -10,6 +10,7 @@ from scipy.sparse import csr_matrix, lil_matrix
 from scipy.sparse.csgraph import connected_components, shortest_path
 from tqdm import tqdm
 from time import time
+from bitarray import bitarray
 
 # Genes at the end of contigs are more likely to be false positives thus
 # we can remove those with low support
@@ -140,11 +141,19 @@ def collapse_families(G,
 
     # keep track of centroids for each sequence. Need this to resolve clashes
     # TODO: incoporate this into new node structure in major refactor
-    node_mem_index_dict = {}
     distances_bwtn_centroids = distances_bwtn_centroids + distances_bwtn_centroids.T
-    index_summary = defaultdict(set)
-    node_mem_index_sets = defaultdict(set)
+    nodes_to_mems = {}
+    mems_by_centroids_d1 = {}
+    mems_by_centroids_d0 = {}
+    ncentroids = distances_bwtn_centroids.shape[0]
     for n in G.nodes():
+        # initialise bit arrays
+        mems_by_centroids_d1[n] = bitarray(ngenomes*ncentroids)
+        mems_by_centroids_d1[n].setall(False)
+        mems_by_centroids_d0[n] = bitarray(ngenomes*ncentroids)
+        mems_by_centroids_d0[n].setall(False)
+        nodes_to_mems[n] = bitarray(ngenomes)
+        nodes_to_mems[n].setall(False)
         nz_row = []
         nz_col = []
         for sid in G.nodes[n]['seqIDs']:
@@ -155,11 +164,14 @@ def collapse_families(G,
             genome = int(sid.split("_")[0])
             nz_row.append(genome)
             nz_col.append(index)
-        node_mem_index_dict[n] = csr_matrix((np.ones(len(nz_col)), (nz_row, nz_col)),
-            shape=(ngenomes, distances_bwtn_centroids.shape[0]), dtype=bool)
-        node_mem_index_sets[n] = set(zip(*node_mem_index_dict[n].nonzero()))
-        index_summary[n] = node_mem_index_dict[n]*distances_bwtn_centroids
-        index_summary[n] = set(zip(*index_summary[n].nonzero()))
+            mems_by_centroids_d0[n][(genome*ncentroids) + index] = True
+            nodes_to_mems[n][genome] = True
+            
+        temp = csr_matrix((np.ones(len(nz_col)), (nz_row, nz_col)),
+            shape=(ngenomes, ncentroids), 
+            dtype=bool)*distances_bwtn_centroids
+        for i,j in zip(*temp.nonzero()):
+            mems_by_centroids_d1[n][i*ncentroids + j] = True
 
     print("starting to collapse")
     tim_sl = 0
@@ -205,13 +217,15 @@ def collapse_families(G,
                     if len(cluster) <= 1: continue
 
                     # check for conflicts
-                    # check for conflicts
-                    members = []
-                    for n in cluster:
-                        for m in G.nodes[n]['members']:
-                            members.append(m)
+                    seen = nodes_to_mems[cluster[0]].copy()
+                    noconflict = True
+                    for n in cluster[1:]:
+                        if (seen & nodes_to_mems[n]).any():
+                            noconflict = False
+                            break
+                        seen |= nodes_to_mems[n]
 
-                    if (len(members) == len(set(members))):
+                    if noconflict:
                         # no conflicts so merge
                         node_count += 1
                         for neig in cluster:
@@ -220,11 +234,16 @@ def collapse_families(G,
                         G = merge_node_cluster(G, cluster, node_count,
                             multi_centroid=(not correct_mistranslations))
                         
-                        index_summary[node_count] = set(itertools.chain.from_iterable(sub_dict_iter(index_summary, cluster)))
-                        node_mem_index_sets[node_count] = set(itertools.chain.from_iterable(sub_dict_iter(node_mem_index_sets, cluster)))
-                        # for n in cluster:
-                        #     index_summary.pop(n, None)
-                        #     node_mem_index_sets.pop(n, None)
+                        mems_by_centroids_d0[node_count] = mems_by_centroids_d0[cluster[0]]
+                        mems_by_centroids_d1[node_count] = mems_by_centroids_d1[cluster[0]]
+                        nodes_to_mems[node_count] = nodes_to_mems[cluster[0]]
+                        for n in cluster[1:]:
+                            mems_by_centroids_d0[node_count] |= mems_by_centroids_d0[n]
+                            mems_by_centroids_d1[node_count] |= mems_by_centroids_d1[n]
+                            nodes_to_mems[node_count] |= nodes_to_mems[n]
+                            del mems_by_centroids_d0[n]
+                            del mems_by_centroids_d1[n]
+                            del nodes_to_mems[n]
 
                         search_space.add(node_count)
                     else:
@@ -236,8 +255,6 @@ def collapse_families(G,
                         tim=time()
                         
                         cluster = sorted(cluster, key=lambda x: G.nodes[x]['size'], reverse=True)
-
-                        
 
                         while len(cluster) > 0:
 
@@ -254,7 +271,7 @@ def collapse_families(G,
                                                 set(G.nodes[n_sub]['centroid']))) > 0:
                                                 should_add = False
                                                 break
-                                        if len(node_mem_index_sets[n_sub].intersection(index_summary[n]))>0:
+                                        if (mems_by_centroids_d0[n_sub] & mems_by_centroids_d1[n]).any():
                                             should_add = False
                                             break
                                     if not should_add: break
@@ -276,11 +293,17 @@ def collapse_families(G,
                                     G = merge_node_cluster(G, clust, node_count,
                                             multi_centroid=(not correct_mistranslations),
                                             check_merge_mems=False)
-                                    index_summary[node_count] = set(itertools.chain.from_iterable(sub_dict_iter(index_summary, clust)))
-                                    node_mem_index_sets[node_count] = set(itertools.chain.from_iterable(sub_dict_iter(node_mem_index_sets, clust)))
-                                    # for n in clust:
-                                    #     index_summary.pop(n, None)
-                                    #     node_mem_index_sets.pop(n, None)
+
+                                    mems_by_centroids_d0[node_count] = mems_by_centroids_d0[clust[0]]
+                                    mems_by_centroids_d1[node_count] = mems_by_centroids_d1[clust[0]]
+                                    nodes_to_mems[node_count] = nodes_to_mems[clust[0]]
+                                    for n in clust[1:]:
+                                        mems_by_centroids_d0[node_count] |= mems_by_centroids_d0[n]
+                                        mems_by_centroids_d1[node_count] |= mems_by_centroids_d1[n]
+                                        nodes_to_mems[node_count] |= nodes_to_mems[n]
+                                        del mems_by_centroids_d0[n]
+                                        del mems_by_centroids_d1[n]
+                                        del nodes_to_mems[n]
                                     
                                     search_space.add(node_count)
 
