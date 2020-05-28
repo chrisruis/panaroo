@@ -24,7 +24,7 @@ if __name__ == "__main__":
         if sampleName.strip() in headerLine:
             samplePositions.append(headerLine.index(sampleName.strip()))
         else:
-            print sampleName.strip() + " is not in the gene presence absence file"
+            print(sampleName.strip() + " is not in the gene presence absence file")
     
     sortedSamplePositions = sorted(samplePositions) #Sort the positions
 
@@ -32,8 +32,8 @@ if __name__ == "__main__":
         if i == 0:
             outFile.write(gene.strip().split("\t")[0] + "\t" + "\t".join(list(itemgetter(*sortedSamplePositions)(gene.strip().split("\t")))) + "\n")
         else:
-            geneSamples = itemgetter(*sortedSamplePositions)(gene.strip().split("\t")) #Extract the presence absence of the gene in the samples
+            geneSamples = list(itemgetter(*sortedSamplePositions)(gene.strip().split("\t"))) #Extract the presence absence of the gene in the samples
             if "1" in set(geneSamples): #Check if the gene is present in the samples
-                outFile.write(gene.strip().split("t")[0] + "\t" + "\t".join(geneSamples) + "\n")
+                outFile.write(gene.strip().split("\t")[0] + "\t" + "\t".join(geneSamples) + "\n")
     
     outFile.close()
